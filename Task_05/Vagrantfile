@@ -1,0 +1,253 @@
+# -*- mode: ruby -*-
+# vim: set ft=ruby :
+home = ENV['HOME']
+ENV["LC_ALL"] = "en_US.UTF-8"
+
+MACHINES = {
+  :lvm => {
+        :box_name => "centos/7",
+    :disks => {
+        :sata1 => {
+            :dfile => home + '/VirtualBox VMs/sata1.vdi',
+            :size => 10240,
+            :port => 1
+        },
+        :sata2 => {
+            :dfile => home + '/VirtualBox VMs/sata2.vdi',
+            :size => 2048, # Megabytes
+            :port => 2
+        },
+        :sata3 => {
+            :dfile => home + '/VirtualBox VMs/sata3.vdi',
+            :size => 1024, # Megabytes
+            :port => 3
+        },
+        :sata4 => {
+            :dfile => home + '/VirtualBox VMs/sata4.vdi',
+            :size => 1024,
+            :port => 4
+        }
+    }
+  },
+}
+
+Vagrant.configure("2") do |config|
+    MACHINES.each do |boxname, boxconfig|
+  
+        config.vm.define boxname do |box|
+  
+            box.vm.box = boxconfig[:box_name]
+            box.vm.host_name = boxname.to_s
+  
+            box.vm.provider :virtualbox do |vb|
+                    vb.customize ["modifyvm", :id, "--memory", "512"]
+                    needsController = false
+            boxconfig[:disks].each do |dname, dconf|
+                unless File.exist?(dconf[:dfile])
+                  vb.customize ['createhd', '--filename', dconf[:dfile], '--variant', 'Fixed', '--size', dconf[:size]]
+                                  needsController =  true
+                            end
+  
+            end
+                    if needsController == true
+                       vb.customize ["storagectl", :id, "--name", "SATA", "--add", "sata" ]
+                       boxconfig[:disks].each do |dname, dconf|
+                           vb.customize ['storageattach', :id,  '--storagectl', 'SATA', '--port', dconf[:port], '--device', 0, '--type', 'hdd', '--medium', dconf[:dfile]]
+                       end
+                    end
+            end
+
+        box.vm.provision 'shell', reboot: true, inline: <<-SHELL
+            echo ==============================================================
+            echo "Начальная конфигурация дисков: \n$(lsblk)"
+            echo "************************************************************"
+            df -h
+            
+            echo ==============================================================
+            echo Установка необходимых компонентов
+            echo ==============================================================
+            yum install -y xfsdump mdadm smartmontools hdparm gdisk
+            
+            echo ==============================================================
+            echo Создание временного логического тома lv_root с файловой системой xfs
+            echo для корневого раздела
+            echo ==============================================================
+            pvcreate /dev/sdb
+            vgcreate vg_root /dev/sdb
+            lvcreate -n lv_root -l +100%FREE /dev/vg_root
+            mkfs.xfs /dev/vg_root/lv_root
+            
+            echo ==============================================================
+            echo Монтирование временного логического тома lv_root в /mnt
+            echo ==============================================================
+            mount /dev/vg_root/lv_root /mnt
+            
+            echo ==============================================================
+            echo Копирование всех данных из / в /mnt
+            echo ==============================================================
+            xfsdump -J - /dev/VolGroup00/LogVol00 | xfsrestore -J - /mnt
+            
+            echo ==============================================================
+            echo Имитация текущего root и обновление grub
+            echo ==============================================================
+            for i in /proc/ /sys/ /dev/ /run/ /boot/; do mount --bind $i /mnt/$i; done
+            chroot /mnt/ bash -c '
+            grub2-mkconfig -o /boot/grub2/grub.cfg
+            
+            echo ==============================================================
+            echo Обновление образа initrd
+            echo ==============================================================
+            cd /boot
+            for i in `ls initramfs-*img`; do dracut -v $i `echo $i|sed "s/initramfs-//g; s/.img//g"` --force; done
+            
+            echo ==============================================================
+            echo Замена точки монтирования в файле grub.cfg
+            echo ==============================================================
+            sed 's@rd.lvm.lv=VolGroup00/LogVol00@rd.lvm.lv=vg_root/lv_root@g' /boot/grub2/grub.cfg > /boot/grub2/ngrub.cfg
+            mv -f /boot/grub2/ngrub.cfg /boot/grub2/grub.cfg'
+        SHELL
+
+        box.vm.provision 'shell', reboot: true, inline: <<-SHELL
+            echo ==============================================================
+            echo Удаление старого логического тома размером в 40G и создание нового на 8G
+            echo ==============================================================
+            lvremove -f /dev/VolGroup00/LogVol00
+            lvcreate -y -n VolGroup00/LogVol00 -L 8G /dev/VolGroup00
+            mkfs.xfs /dev/VolGroup00/LogVol00
+            
+            echo ==============================================================
+            echo Монтирование нового логического тома LogVol в /mnt
+            echo ==============================================================
+            mount /dev/VolGroup00/LogVol00 /mnt
+            
+            echo ==============================================================
+            echo Копирование всех данных из временного / в /mnt
+            echo ==============================================================
+            xfsdump -J - /dev/vg_root/lv_root | xfsrestore -J - /mnt
+            
+            echo ==============================================================
+            echo Конфигурирование grub
+            echo ==============================================================
+            for i in /proc/ /sys/ /dev/ /run/ /boot/; do mount --bind $i /mnt/$i; done
+            chroot /mnt/ bash -c '
+            grub2-mkconfig -o /boot/grub2/grub.cfg
+            
+            echo ==============================================================
+            echo Обновление образа initrd
+            echo ==============================================================
+            cd /boot
+            for i in `ls initramfs-*img`; do dracut -v $i `echo $i|sed "s/initramfs-//g; s/.img//g"` --force; done'
+        SHELL
+        
+        box.vm.provision 'shell', reboot: true, inline: <<-SHELL
+            echo ==============================================================
+            echo Удаление временного логического тома lv_root и освобождение диска sdb
+            echo ==============================================================
+            lvremove -f /dev/vg_root/lv_root
+            vgremove -f /dev/vg_root
+            pvremove /dev/sdb
+            
+            echo ==============================================================
+            echo Создание зеркала и логического тома lv_var на свободных дисках sdc и sdd
+            echo ==============================================================
+            pvcreate /dev/sdc /dev/sdd
+            vgcreate vg_var /dev/sdc /dev/sdd
+            lvcreate -L 950M -m1 -n lv_var vg_var
+            
+            echo ==============================================================
+            echo Создание файловой системы ext4 для lv_var и монтирование в /mnt
+            echo ==============================================================
+            mkfs.ext4 /dev/vg_var/lv_var
+            mount /dev/vg_var/lv_var /mnt
+            
+            echo ==============================================================
+            echo Копирование содержимого /var в /mnt
+            echo ==============================================================
+            cp -aR /var/* /mnt/
+            
+            echo ==============================================================
+            echo Монтирование lv_var в /var
+            echo ==============================================================
+            umount /mnt
+            mount /dev/vg_var/lv_var /var
+            
+            echo ==============================================================
+            echo Исправление fstab для автоматического монтирования /var
+            echo ==============================================================
+            echo "`blkid | grep var: | awk '{print $2}'` /var ext4 defaults 0 0" >> /etc/fstab
+        SHELL
+
+        box.vm.provision 'shell', inline: <<-SHELL
+            echo ==============================================================
+            echo Выделение логического тома под /home
+            echo ==============================================================
+            lvcreate -n LogVol_Home -L 2G /dev/VolGroup00
+            
+            echo ==============================================================
+            echo Создание файловой системы xfs для LogVol_Home и монтирование в /mnt
+            echo ==============================================================
+            mkfs.xfs /dev/VolGroup00/LogVol_Home
+            mount /dev/VolGroup00/LogVol_Home /mnt/
+            
+            echo ==============================================================
+            echo Копирование содержимого /home в /mnt
+            echo ==============================================================
+            cp -aR /home/* /mnt/
+            
+            echo ==============================================================
+            echo Удаление старых данных в /home и монтирование логического тома LogVol_Home в /home
+            echo ==============================================================
+            rm -rf /home/*
+            umount /mnt
+            mount /dev/VolGroup00/LogVol_Home /home/
+            
+            echo ==============================================================
+            echo Исправление fstab для автоматического монтирования /home
+            echo ==============================================================
+            echo "`blkid | grep Home | awk '{print $2}'` /home xfs defaults 0 0" >> /etc/fstab
+            
+            echo ==============================================================
+            echo Наполнение /home полезным содержимым
+            echo ==============================================================
+            touch /home/file{1..20}
+            ls /home
+            
+            echo ==============================================================
+            echo Снятие снапшота /home
+            echo ==============================================================
+            lvcreate -L 100MB -s -n home_snap /dev/VolGroup00/LogVol_Home
+            
+            echo ==============================================================
+            echo Удаление части данных в /home
+            echo ==============================================================
+            rm -f /home/file{11..20}
+            ls /home
+            
+            echo ==============================================================
+            echo Восстановление данных из снапшота для /home
+            echo ==============================================================
+            umount /home
+            lvconvert --merge /dev/VolGroup00/home_snap
+            mount /home
+            
+            echo ==============================================================
+            echo Вывод итогового состояния
+            echo ==============================================================
+            echo Содержимое /home :\n
+            ls /home
+            echo "************************************************************"
+            lsblk
+            echo "************************************************************"
+            df -h
+            echo "************************************************************"
+            lvdisplay /dev/mapper/vg_var-lv_var
+        SHELL
+  
+        box.vm.provision "shell", inline: <<-SHELL
+            mkdir -p ~root/.ssh
+            cp ~vagrant/.ssh/auth* ~root/.ssh
+        SHELL
+
+        end
+    end
+  end
