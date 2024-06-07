@@ -1,0 +1,194 @@
+# -*- mode: ruby -*-
+# vim: set ft=ruby :
+# disk_controller = 'IDE' # MacOS. This setting is OS dependent. Details https://github.com/hashicorp/vagrant/issues/8105
+
+MACHINES = {
+  :zfs => {
+      :box_name => "centos/7",
+      # :box_version => "2004.01",
+    :disks => {
+      :sata1 => {
+        :dfile => './sata1.vdi',
+        :size => 512,
+        :port => 1
+      },
+      :sata2 => {
+        :dfile => './sata2.vdi',
+        :size => 512, # Megabytes
+        :port => 2
+      },
+      :sata3 => {
+        :dfile => './sata3.vdi',
+        :size => 512,
+        :port => 3
+      },
+      :sata4 => {
+        :dfile => './sata4.vdi',
+        :size => 512,
+        :port => 4
+      },
+      :sata5 => {
+        :dfile => './sata5.vdi',
+        :size => 512,
+        :port => 5
+      },
+      :sata6 => {
+        :dfile => './sata6.vdi',
+        :size => 512,
+        :port => 6
+      },
+      :sata7 => {
+        :dfile => './sata7.vdi',
+        :size => 512,
+        :port => 7
+      },
+      :sata8 => {
+        :dfile => './sata8.vdi',
+        :size => 512,
+        :port => 8
+      },
+    }
+  },
+}
+Vagrant.configure("2") do |config|
+  MACHINES.each do |boxname, boxconfig|
+    config.vm.synced_folder ".", "/vagrant", type: "rsync", rsync__exclude: [".vagrant/", "*.vdi"]
+    config.vm.define boxname do |box|
+      box.vm.box = boxconfig[:box_name]
+      box.vm.box_version = boxconfig[:box_version]
+      box.vm.host_name = "zfs"
+      box.vm.provider :virtualbox do |vb|
+        vb.customize ["modifyvm", :id, "--memory", "1024"]
+    needsController = false
+    boxconfig[:disks].each do |dname, dconf|
+      unless File.exist?(dconf[:dfile])
+      vb.customize ['createhd', '--filename', dconf[:dfile], '--variant', 'Fixed', '--size', dconf[:size]]
+    needsController = true
+      end
+    end
+    if needsController == true
+        vb.customize ["storagectl", :id, "--name", "SATA", "--add", "sata" ]
+        boxconfig[:disks].each do |dname, dconf|
+          vb.customize ['storageattach', :id, '--storagectl', 'SATA', '--port', dconf[:port], '--device', 0, '--type', 'hdd', '--medium', dconf[:dfile]]
+        end
+    end
+    end
+
+    box.vm.provision "shell", inline: <<-SHELL
+      #install zfs repo
+      yum install -y http://download.zfsonlinux.org/epel/zfs-release.el7_8.noarch.rpm
+      #import gpg key
+      rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-zfsonlinux
+      #install DKMS style packages for correct work ZFS
+      yum install -y epel-release kernel-devel
+      #change ZFS repo
+      yum-config-manager --disable zfs
+      yum-config-manager --enable zfs-kmod
+      yum install -y zfs
+      #Add kernel module zfs
+      modprobe zfs
+      #install wget
+      yum install -y wget
+    SHELL
+
+    box.vm.provision 'shell', inline: <<-SHELL
+      YELLOW='\033[1;33m'
+      LBLUE='\033[1;34m'
+      NOCOLOR='\033[0m'
+      echo ${LBLUE}==============================================================
+      echo "${LBLUE}Конфигурация дисков: \n${NOCOLOR}$(lsblk)"
+      echo "${YELLOW}************************************************************"
+      df -h
+
+      echo ${LBLUE}==============================================================
+      echo ${LBLUE}Создание четырёх пулов, содержащих по два диска в режиме RAID1
+      echo ${LBLUE}==============================================================
+      zpool create otus1 mirror /dev/sdb /dev/sdc
+      zpool create otus2 mirror /dev/sdd /dev/sde
+      zpool create otus3 mirror /dev/sdf /dev/sdg
+      zpool create otus4 mirror /dev/sdh /dev/sdi
+      zpool list
+      echo "${YELLOW}************************************************************"
+      zpool status
+
+      echo ${LBLUE}==============================================================
+      echo ${LBLUE}Добавление алгоритмов сжатия для каждой файловой системы
+      echo ${LBLUE}==============================================================
+      zfs set compression=lzjb otus1
+      zfs set compression=lz4 otus2
+      zfs set compression=gzip-9 otus3 # С максимальным уровнем сжатия
+      zfs set compression=zle otus4
+      zfs get all | grep compression
+
+      echo ${LBLUE}==============================================================
+      echo ${LBLUE}Наполнение пулов полезным содержимым
+      echo ${LBLUE}Оценка эффективности алгоритмов сжатия
+      echo ${LBLUE}==============================================================
+      bash -c 'for i in {1..4}; do wget -q -P /otus$i https://gutenberg.org/cache/epub/2600/pg2600.converter.log; done'
+      ls -l /otus*
+      echo "${YELLOW}************************************************************"
+      zfs list
+      echo "${YELLOW}************************************************************"
+      zfs get all | grep compressratio | grep -v ref
+
+      echo ${LBLUE}==============================================================
+      echo ${LBLUE}Определение настроек пула
+      echo ${LBLUE}==============================================================
+      echo ${YELLOW}Скачаивание архива
+      wget -q -O archive.tar.gz --no-check-certificate 'https://drive.usercontent.google.com/download?id=1MvrcEp-WgAQe57aDEzxSRalPAwbNN1Bb&export=download'
+      echo "${YELLOW}************************************************************"
+      echo ${YELLOW}Распаковка архива
+      tar -xzvf archive.tar.gz
+      echo "${YELLOW}************************************************************"
+      echo ${YELLOW}Проверка возможности импорта
+      zpool import -d zpoolexport/
+      echo "${YELLOW}************************************************************"
+      echo ${YELLOW}Импортирование пула
+      zpool import -d zpoolexport/ otus
+      echo "${YELLOW}************************************************************"
+      df -h
+      echo "${YELLOW}************************************************************"
+      echo ${YELLOW}Статус пула
+      zpool status otus
+      echo "${YELLOW}************************************************************"
+      echo ${YELLOW}Настройки пула
+      zpool get all otus
+      echo "${YELLOW}************************************************************"
+      echo ${YELLOW}Параметры файловой системы
+      zfs get all otus
+      echo "${YELLOW}************************************************************"
+      echo ${YELLOW}Размер хранилища
+      zfs get available otus
+      echo "${YELLOW}************************************************************"
+      echo ${YELLOW}Тип пула
+      zfs get readonly otus
+      echo "${YELLOW}************************************************************"
+      echo ${YELLOW}Размер записи
+      zfs get recordsize otus
+      echo "${YELLOW}************************************************************"
+      echo ${YELLOW}Тип сжатия
+      zfs get compression otus
+      echo "${YELLOW}************************************************************"
+      echo ${YELLOW}Тип контрольной суммы
+      zfs get checksum otus
+
+      echo ${LBLUE}==============================================================
+      echo ${LBLUE}Поиск secret_message
+      echo ${LBLUE}==============================================================
+      echo ${YELLOW}Скачивание файла
+      wget -q -O otus_task2.file --no-check-certificate 'https://drive.usercontent.google.com/download?id=1wgxjih8YZ-cqLqaZVa0lA3h3Y029c3oI&export=download'
+      echo "${YELLOW}************************************************************"
+      echo ${YELLOW}Восстановление файловой системы
+      zfs receive otus/test@today < otus_task2.file
+      echo "${YELLOW}************************************************************"
+      df -h
+      echo "${YELLOW}************************************************************"
+      echo ${YELLOW}Поиск фразы
+      find /otus/test -name "secret_message"
+      cat /otus/test/task1/file_mess/secret_message
+
+    SHELL
+
+  end
+  end
+end
