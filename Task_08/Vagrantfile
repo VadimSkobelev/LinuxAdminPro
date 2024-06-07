@@ -1,0 +1,120 @@
+Vagrant.configure(2) do |config|
+    config.vm.define "rpm" do |srv|
+      srv.vm.box = "almalinux/9"
+      srv.vm.synced_folder "./", "/vagrant"
+      srv.vm.hostname = "task8-almalinux2023"
+      srv.vm.provider "virtualbox" do |vb|
+        vb.memory = "2048"
+        vb.cpus = "2"
+        vb.name = "Task8-almalinux2023"
+      end
+
+      srv.vm.network "forwarded_port", guest: 80, host: 8080
+
+    config.vm.provision 'shell', inline: <<-SHELL
+      echo ==============================================================
+      echo Установка необходимых компонентов
+      echo ==============================================================
+      yum install -y yum-utils git cmake rpm-build createrepo wget
+
+      echo ==============================================================
+      echo Загрузка SRPM пакета Nginx
+      echo ==============================================================
+      mkdir rpm
+      cd rpm
+      yumdownloader --source nginx
+
+      echo ==============================================================
+      echo Установка зависимостей для сборки пакета Nginx
+      echo ==============================================================
+      rpm -Uvh nginx*.src.rpm
+      yum-builddep -y nginx
+
+      echo ==============================================================
+      echo Скачивание исходного кода ngx_brotli для оптимизации компрессии данных
+      echo ==============================================================
+      cd /root
+      git clone --recurse-submodules -j8 https://github.com/google/ngx_brotli
+      cd ngx_brotli/deps/brotli
+      mkdir out
+      cd out
+
+      echo ==============================================================
+      echo Сборка модуля ngx_brotli
+      echo ==============================================================
+      cmake -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_SHARED_LIBS=OFF -DCMAKE_C_FLAGS="-Ofast -m64 -march=native \
+      -mtune=native -flto -funroll-loops -ffunction-sections -fdata-sections \
+      -Wl,--gc-sections" -DCMAKE_CXX_FLAGS="-Ofast -m64 -march=native -mtune=native \
+      -flto -funroll-loops -ffunction-sections -fdata-sections -Wl,--gc-sections" \
+      -DCMAKE_INSTALL_PREFIX=./installed ..
+      cmake --build . --config Release -j 2 --target brotlienc
+
+      echo ==============================================================
+      echo Настройка параметров сборки nginx. Добавление модуля ngx_brotli
+      echo ==============================================================
+      cd ../../../../rpmbuild/SPECS/
+      sed -i '/--with-debug/ a --add-module=\/root\/ngx_brotli \\\\' nginx.spec
+
+      echo ==============================================================
+      echo Сборка пакета nginx
+      echo ==============================================================
+      rpmbuild -ba nginx.spec -D 'debug_package %{nil}'
+      cp /root/rpmbuild/RPMS/noarch/* /root/rpmbuild/RPMS/x86_64/
+      cd /root/rpmbuild/RPMS/x86_64/
+
+      echo ==============================================================
+      echo Собранные пакеты:
+      echo ==============================================================
+      ls -l
+
+      echo ==============================================================
+      echo Установка nginx из собранного пакета
+      echo ==============================================================
+      
+      yum localinstall -y *.rpm
+      systemctl start nginx
+      systemctl enable nginx
+      systemctl status nginx
+
+      echo ==============================================================
+      echo Создание локального репозитория
+      echo ==============================================================
+      mkdir /usr/share/nginx/html/repo
+      cp /root/rpmbuild/RPMS/x86_64/*.rpm /usr/share/nginx/html/repo/
+      createrepo /usr/share/nginx/html/repo/
+      sed -i '/usr\\/share\\/nginx\\/html;/ a index index.html index.htm;' /etc/nginx/nginx.conf
+      sed -i '/index index.html index.htm;/ a autoindex on;' /etc/nginx/nginx.conf
+      nginx -t
+      nginx -s reload
+
+      echo ==============================================================
+      echo Проверка утилитой curl доступности репозитория
+      echo ==============================================================
+      curl -a http://localhost/repo/
+
+      echo ==============================================================
+      echo Добавление репозитория в систему для использования
+      echo ==============================================================
+      bash -c 'cat >> /etc/yum.repos.d/otus.repo << EOF
+[otus]
+name=otus-linux
+baseurl=http://localhost/repo
+gpgcheck=0
+enabled=1
+'EOF
+      yum repolist enabled | grep otus
+
+      echo ==============================================================
+      echo Добавление пакета percona в локальный репозиторий с последующей установкой
+      echo ==============================================================
+      cd /usr/share/nginx/html/repo/
+      wget https://repo.percona.com/yum/percona-release-latest.noarch.rpm
+      createrepo /usr/share/nginx/html/repo/
+      yum makecache
+      yum list | grep otus
+      yum install -y percona-release.noarch
+    SHELL
+
+    end
+end
