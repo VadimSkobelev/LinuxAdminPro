@@ -1,0 +1,57 @@
+
+Vagrant.configure(2) do |config|
+    config.vm.synced_folder ".", "/vagrant", type: "rsync", rsync__exclude: [".vagrant/", "*.png"]
+    config.vm.define "grub" do |srv|
+      srv.vm.box = "generic/ubuntu2204"
+      srv.vm.synced_folder "./", "/vagrant"
+      srv.vm.hostname = "task9-ubuntu2204"
+      srv.vm.provider "virtualbox" do |vb|
+        vb.memory = "2048"
+        vb.cpus = "2"
+        vb.name = "Task9-ubuntu2204"
+      end
+
+    config.vm.provision 'shell', reboot: true, inline: <<-SHELL
+    LBLUE='\033[1;34m'
+    echo ${LBLUE}==============================================================
+    echo ${LBLUE}Имя Volume Group по умолчанию
+    echo ${LBLUE}==============================================================
+    vgs
+
+    echo ${LBLUE}==============================================================
+    echo ${LBLUE}Установка нового имени ubuntu-otus для Volume Group
+    echo ${LBLUE}==============================================================
+    vgrename ubuntu-vg ubuntu-otus
+    vgs
+
+    echo ${LBLUE}==============================================================
+    echo ${LBLUE}Внесение изменений в конфигурацию Grub
+    echo ${LBLUE}для сохранения названия после перезагрузки
+    echo ${LBLUE}==============================================================
+    sed -i 's/ubuntu--vg/ubuntu--otus/g' /boot/grub/grub.cfg
+
+    SHELL
+
+    config.vm.provision 'shell', inline: <<-SHELL
+    LBLUE='\033[1;34m'
+    YELLOW='\033[1;33m'
+    echo ${LBLUE}==============================================================
+    echo ${LBLUE}Проверка сохранения имени Volume Group после перезагрузки
+    echo ${LBLUE}==============================================================
+    vgs
+
+    echo ${LBLUE}==============================================================
+    echo ${LBLUE}Включение отображения меню Grub
+    echo ${LBLUE}==============================================================
+    sed -i 's/GRUB\\_TIMEOUT\\_STYLE\\=hidden/#GRUB\\_TIMEOUT\\_STYLE\\=hidden/' /etc/default/grub
+    sed -i 's/GRUB\\_TIMEOUT\\=0/GRUB\\_TIMEOUT\\=10/' /etc/default/grub
+    update-grub
+    echo ${YELLOW}Новые значения для Grub:
+    echo ${YELLOW}"**********************"
+    grep GRUB_TIMEOUT /etc/default/grub
+    echo ${YELLOW}"**********************"
+
+    SHELL
+
+    end
+end
