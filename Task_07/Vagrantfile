@@ -1,0 +1,96 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure(2) do |config|
+    config.vm.box = "ubuntu/jammy64"
+    config.vm.synced_folder "./", "/vagrant", type: "rsync", rsync__exclude: [".vagrant/"]
+  
+    config.vm.provider "virtualbox" do |v|
+      v.memory = 1024
+      v.cpus = 1
+    end
+  
+    config.vm.define "nfss" do |nfss|
+      nfss.vm.network "private_network", ip: "192.168.50.10", virtualbox__intnet: "net1"
+      nfss.vm.hostname = "nfss"
+
+      nfss.vm.provision 'shell', reboot: true, inline: <<-SHELL
+        LBLUE='\033[1;34m'
+        YELLOW='\033[1;33m'
+        NOCOLOR='\033[0m'
+        echo ${LBLUE}==============================================================
+        echo ${LBLUE}Установка NFS сервера
+        echo ${LBLUE}==============================================================
+        apt install -y nfs-kernel-server
+  
+        echo ${LBLUE}==============================================================
+        echo ${LBLUE}Настройка директории для экспортирования
+        echo ${LBLUE}==============================================================
+        mkdir -p /srv/share/upload
+        chown -R nobody:nogroup /srv/share
+        chmod 0777 /srv/share/upload
+        bash -c 'cat >> /etc/exports << EOF
+/srv/share 192.168.50.11/32(rw,sync,root_squash)
+'EOF
+
+        echo ${LBLUE}==============================================================
+        echo ${LBLUE}Экспортирование ранее созданной директории
+        echo ${LBLUE}==============================================================
+        exportfs -r
+        echo "${YELLOW}Экспортированная директория: \n${NOCOLOR}$(exportfs -s)"
+
+        echo ${LBLUE}==============================================================
+        echo ${LBLUE}Создание файла check_file на NFS сервере
+        echo ${LBLUE}==============================================================
+        ls -l /srv/share/upload/
+        touch /srv/share/upload/check_file
+        ls -l /srv/share/upload/
+
+      SHELL
+  
+    end
+  
+    config.vm.define "nfsc" do |nfsc|
+      nfsc.vm.network "private_network", ip: "192.168.50.11", virtualbox__intnet: "net1"
+      nfsc.vm.hostname = "nfsc"
+
+      nfsc.vm.provision 'shell', reboot: true, inline: <<-SHELL
+        LBLUE='\033[1;34m'
+        YELLOW='\033[1;33m'
+        NOCOLOR='\033[0m'
+        echo ${LBLUE}==============================================================
+        echo ${LBLUE}Установка NFS-клиента
+        echo ${LBLUE}==============================================================
+        apt install -y nfs-common
+
+        echo ${LBLUE}==============================================================
+        echo ${LBLUE}Корректировка /etc/fstab для автомонтирования в /mnt
+        echo ${LBLUE}==============================================================
+        echo "192.168.50.10:/srv/share/ /mnt nfs vers=3,noauto,x-systemd.automount 0 0" >> /etc/fstab
+
+        echo ${LBLUE}==============================================================
+        echo ${LBLUE}Монтирование и проверка
+        echo ${LBLUE}==============================================================
+        systemctl daemon-reload
+        systemctl restart remote-fs.target
+        echo "${LBLUE}До монтирования: \n${NOCOLOR}$(df -h)"
+        echo "${YELLOW}************************************************************"
+        cd /mnt
+        echo "${LBLUE}После монтирования: \n${NOCOLOR}$(df -h)"
+        echo "${YELLOW}************************************************************"
+        mount | grep mnt
+        echo "${LBLUE}Создание файла на клиенте first_client_file"
+        echo "${YELLOW}************************************************************"
+        touch /mnt/upload/first_client_file
+
+      SHELL
+
+    end
+
+    config.trigger.after :up do |trigger|
+      trigger.only_on = "nfsc"
+      trigger.info = "*****Проверка работоспособности NFS-клиента*****"
+      trigger.run_remote = {inline: "chmod 777 check_nfsc.sh"}
+      trigger.run_remote = {path: "check_nfsc.sh"}
+    end
+  end
