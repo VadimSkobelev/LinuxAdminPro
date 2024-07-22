@@ -1,0 +1,46 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure(2) do |config|
+    config.vm.synced_folder ".", "/vagrant", type: "rsync"
+    config.vm.box = "ubuntu/jammy64"
+  
+    config.vm.provider "virtualbox" do |v|
+      v.memory = 2048
+      v.cpus = 2
+    end
+  
+    config.vm.define "bash" do |b|
+      b.vm.hostname = "bash"
+      b.vm.network "forwarded_port", guest: 80, host: 8080
+
+      b.vm.provision 'shell', inline: <<-SHELL
+        LBLUE='\033[1;34m'
+        echo ${LBLUE}==============================================================
+        echo ${LBLUE}Установка Nginx и sendmail
+        echo ${LBLUE}==============================================================
+        add-apt-repository -y universe multiverse
+        apt install -y nginx sendmail
+        debconf-set-selections <<< "postfix postfix/mailname string your.hostname.com"
+        debconf-set-selections <<< "postfix postfix/main_mailer_type string 'Internet Site'"
+        apt install -y mailutils
+        systemctl start nginx
+        chmod +x /vagrant/log_processing.sh
+
+        echo ${LBLUE}==============================================================
+        echo ${LBLUE}Создание работы в cron
+        echo ${LBLUE}==============================================================
+        echo "PATH=/usr/sbin:/usr/bin:/sbin:/bin" >> /var/spool/cron/crontabs/root
+        echo "0 */1 * * * /vagrant/log_processing.sh" >> /var/spool/cron/crontabs/root
+        chown root:crontab /var/spool/cron/crontabs/root
+        chmod 600 /var/spool/cron/crontabs/root
+
+        echo ${LBLUE}==============================================================
+        echo ${LBLUE}"Вывод crontab -l"
+        echo ${LBLUE}==============================================================
+        crontab -l
+
+      SHELL
+  
+    end
+  end
