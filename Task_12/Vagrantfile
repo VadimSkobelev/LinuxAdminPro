@@ -1,0 +1,32 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure(2) do |config|
+    config.vm.synced_folder ".", "/vagrant", type: "rsync", rsync__exclude: [".vagrant/", "Vagrantfile"]
+    config.vm.synced_folder ".", "/vagrant", type: "rsync"
+    config.vm.box = "ubuntu/jammy64"
+  
+    config.vm.provider "virtualbox" do |v|
+      v.memory = 2048
+      v.cpus = 2
+    end
+  
+    config.vm.define "ps" do |ps|
+      ps.vm.hostname = "ps"
+
+      ps.vm.provision 'shell', inline: <<-SHELL
+        LBLUE='\033[1;34m'
+        echo ${LBLUE}==============================================================
+        echo ${LBLUE}"Вывод команды ps -ax"
+        echo ${LBLUE}==============================================================
+        ps -ax
+        echo ${LBLUE}==============================================================
+        echo ${LBLUE}Результат собственной реализации в виде скрипта ps_ax.sh
+        echo ${LBLUE}==============================================================
+        chmod +x /vagrant/ps_ax.sh
+        bash /vagrant/ps_ax.sh
+
+      SHELL
+  
+    end
+  end
