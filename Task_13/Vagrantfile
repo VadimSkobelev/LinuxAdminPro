@@ -1,0 +1,172 @@
+# -*- mode: ruby -*-
+# vim: set ft=ruby :
+
+MACHINES = {
+    :selinux => {
+    :box_name => "centos/7",
+    #:box_version => "2004.01",
+    #:provision => "test.sh",
+    },
+}
+
+Vagrant.configure("2") do |config|
+    MACHINES.each do |boxname, boxconfig|
+        
+        config.vm.define boxname do |box|
+            box.vm.box = boxconfig[:box_name]
+            box.vm.box_version = boxconfig[:box_version]
+            box.vm.host_name = "selinux"
+            box.vm.network "forwarded_port", guest: 4881, host: 4881
+            
+            box.vm.provider :virtualbox do |vb|
+                vb.customize ["modifyvm", :id, "--memory", "1024"]
+                needsController = false
+            end
+        
+            box.vm.provision "shell", inline: <<-SHELL
+                # Centos 7 has reached EOL (End of Life) 1 July 2024, thus mirrorlist.centos.org is no longer available.
+                # Use vault.centos.org instead of mirrorlist.centos.org
+                sed -i s/mirror.centos.org/vault.centos.org/g /etc/yum.repos.d/*.repo
+                sed -i s/^#.*baseurl=http/baseurl=http/g /etc/yum.repos.d/*.repo
+                sed -i s/^mirrorlist=http/#mirrorlist=http/g /etc/yum.repos.d/*.repo
+                #install epel-release
+                yum install -y epel-release
+                #install nginx
+                yum install -y nginx
+                #change nginx port
+                sed -ie 's/:80/:4881/g' /etc/nginx/nginx.conf
+                sed -i 's/80;/4881;/' /etc/nginx/nginx.conf
+                #disable SELinux
+                #setenforce 0
+                #start nginx
+
+                LBLUE='\033[1;34m'
+                YELLOW='\033[1;33m'
+                RED='\033[0;31m'
+                WHITE='\x1b[37m'
+                NOCOLOR='\033[0m'
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}Gets an error during Nginx start
+                echo ${RED}"[emerg] bind() to [::]:4881 failed (13: Permission denied)"
+                echo ${YELLOW}"**************************************************************"
+                systemctl start nginx
+                systemctl status nginx
+
+                echo ${LBLUE}==============================================================
+                echo ${LBLUE}"Running Nginx on a non-standard port (4881)"
+                echo ${LBLUE}==============================================================
+                echo
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}Preliminary checks
+                echo ${YELLOW}"**************************************************************"
+                echo ${WHITE}Firewall status
+                systemctl status firewalld
+                echo
+                echo ${WHITE}nginx.conf integrity
+                nginx -t
+                echo
+                echo ${WHITE}SELinux mode
+                getenforce
+                echo
+
+                echo ${WHITE}"-------------------------------------------------------------"
+                echo ${WHITE}"Method 1 (setsebool switch)"
+                echo ${WHITE}"-------------------------------------------------------------"
+
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}Installation audit2way tool
+                echo ${YELLOW}"**************************************************************"
+                yum -q provides audit2why
+                yum install -y policycoreutils-python
+
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}Checking audit.log to find the cause of the problem
+                echo ${YELLOW}"**************************************************************"
+                tmptime=$(grep  4881 /var/log/audit/audit.log | awk '{print $2}' | sed 's/msg=audit(//' | sed 's/)://')
+                grep $tmptime /var/log/audit/audit.log | audit2why
+
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}Activate and check nis_enabled via setseboot
+                echo ${YELLOW}"**************************************************************"
+                active=$(grep $tmptime /var/log/audit/audit.log | audit2why | grep "#" | sed 's/#//')
+                $active
+                getsebool -a | grep nis_enabled
+
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}"Start Nginx and check port 4881"
+                echo ${YELLOW}"**************************************************************"
+                systemctl start nginx
+                #check nginx port
+                ss -tlpn | grep 4881
+
+                echo ${WHITE}"-------------------------------------------------------------"
+                echo ${WHITE}"Method 2 (add port 4881 for the type http_port_t)"
+                echo ${WHITE}"-------------------------------------------------------------"
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}Priliminary actions to break Nginx
+                echo ${YELLOW}"- stop Nginx"
+                echo ${YELLOW}"- set nis_enabled to off"
+                echo ${YELLOW}"- getting error when try to start Nginx"
+                echo ${YELLOW}"**************************************************************"
+                systemctl stop nginx
+                setsebool -P nis_enabled off
+                getsebool -a | grep nis_enabled
+                systemctl start nginx
+                systemctl status nginx
+
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}Gets list of type
+                echo ${YELLOW}"**************************************************************"
+                semanage port -l | grep http
+
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}Add port 4881 for the type http_port_t
+                echo ${YELLOW}"**************************************************************"
+                semanage port -a -t http_port_t -p tcp 4881
+                semanage port -l | grep http_port_t
+
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}"Start Nginx and check port 4881"
+                echo ${YELLOW}"**************************************************************"
+                systemctl start nginx
+                ss -tlpn | grep 4881
+
+                echo ${WHITE}"-------------------------------------------------------------"
+                echo ${WHITE}"Method 3 (create a new module for SELinux)"
+                echo ${WHITE}"-------------------------------------------------------------"
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}Priliminary actions to break Nginx
+                echo ${YELLOW}"- stop Nginx"
+                echo ${YELLOW}"- remove port 4881 for the type http_port_t"
+                echo ${YELLOW}"- getting error when try to start Nginx"
+                echo ${YELLOW}"**************************************************************"
+                systemctl stop nginx
+                semanage port -d -t http_port_t -p tcp 4881
+                semanage port -l | grep http_port_t
+                systemctl start nginx
+                systemctl status nginx
+
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}Checking audit.log to find the cause of the problem
+                echo ${YELLOW}"**************************************************************"
+                grep  nginx /var/log/audit/audit.log
+
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}Uses audit2allow utility to create a new module
+                echo ${YELLOW}"**************************************************************"
+                grep nginx /var/log/audit/audit.log | audit2allow -M nginx
+                active=$(grep nginx /var/log/audit/audit.log | audit2allow -M nginx | grep "semodule")
+                $active
+                echo "${YELLOW}New module: ${NOCOLOR} $(semodule -l |grep nginx)"
+                echo
+
+                echo ${YELLOW}"**************************************************************"
+                echo ${YELLOW}"Start Nginx and check port 4881"
+                echo ${YELLOW}"**************************************************************"
+                systemctl start nginx
+                ss -tlpn | grep 4881
+
+            SHELL
+        end
+    end
+end
