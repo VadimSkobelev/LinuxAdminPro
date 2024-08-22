@@ -1,0 +1,110 @@
+MACHINES = {
+    :"pam" => {
+        :box_name => "ubuntu/jammy64",
+        :cpus => 2,
+        :memory => 1024,
+        :ip => "192.168.57.10",
+    }
+}
+
+Vagrant.configure("2") do |config|
+    MACHINES.each do |boxname, boxconfig|
+    config.vm.synced_folder ".", "/vagrant", disabled: true
+    config.vm.network "private_network", ip: boxconfig[:ip]
+    config.vm.define boxname do |box|
+        box.vm.box = boxconfig[:box_name]
+        box.vm.box_version = boxconfig[:box_version]
+        box.vm.host_name = boxname.to_s
+        box.vm.provider "virtualbox" do |v|
+            v.customize ["setextradata", :id, "VBoxInternal/Devices/VMMDev/0/Config/GetHostTimeDisabled", "1"] #disable time sync
+            v.memory = boxconfig[:memory]
+            v.cpus = boxconfig[:cpus]
+        end
+
+        box.vm.provision "shell", inline: <<-SHELL
+            sed -i 's/\PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
+            systemctl restart sshd
+
+            LBLUE='\033[1;34m'
+
+            echo ${LBLUE}==============================================================
+            echo ${LBLUE}Установка необходимых компонентов
+            echo ${LBLUE}==============================================================
+            add-apt-repository -y universe multiverse
+            apt install -y sshpass
+
+            echo ${LBLUE}==============================================================
+            echo ${LBLUE}Создание пользователей otusadm и otus
+            echo ${LBLUE}==============================================================
+            useradd -m otusadm
+            useradd -m otus
+            grep otus /etc/passwd
+
+            echo ${LBLUE}==============================================================
+            echo ${LBLUE}Создание паролей для пользователей
+            echo ${LBLUE}==============================================================
+            grep otus /etc/shadow
+            chpasswd <<< "otusadm:Otus2024!"
+            chpasswd <<< "otus:Otus2024!"
+            echo
+            grep otus /etc/shadow
+
+            echo ${LBLUE}==============================================================
+            echo ${LBLUE}Создание группы administrators
+            echo ${LBLUE}==============================================================
+            groupadd -f administrators
+            grep administrators /etc/group
+
+            echo ${LBLUE}==============================================================
+            echo ${LBLUE}Добавление пользователей vagrant, root и otusadm в группу administrators
+            echo ${LBLUE}==============================================================
+            usermod otusadm -a -G administrators
+            usermod root -a -G administrators
+            usermod vagrant -a -G administrators
+            grep administrators /etc/group
+
+            echo ${LBLUE}==============================================================
+            echo ${LBLUE}Проверка возможности логина пользователями otusadm и otus
+            echo ${LBLUE}==============================================================
+            date
+            sshpass -p Otus2024! ssh -oStrictHostKeyChecking=no -l otus 192.168.57.10 bash -c whoami
+            sshpass -p Otus2024! ssh -oStrictHostKeyChecking=no -l otusadm 192.168.57.10 bash -c whoami
+
+            echo ${LBLUE}==============================================================
+            echo ${LBLUE}Настройка запрета всем пользователям кроме группы administrators логин в выходные дни
+            echo ${LBLUE}==============================================================
+            # Скрипт для использования в модуле pam_exec
+            bash -c cat <<EOF > /usr/local/bin/login.sh
+#!/bin/bash
+#Первое условие: если день недели суббота или воскресенье
+if [ \\$(date +%a) = "Sat" ] || [ \\$(date +%a) = "Sun" ]; then
+#Второе условие: входит ли пользователь в группу administrators
+if getent group administrators | grep -qw "\\$PAM_USER"; then
+#Если пользователь входит в группу administrators, то он может подключиться
+exit 0
+else
+#Иначе ошибка (не сможет подключиться)
+exit 1
+fi
+#Если день не выходной, то подключиться может любой пользователь
+else
+exit 0
+fi
+EOF
+            chmod +x /usr/local/bin/login.sh
+            echo auth required pam_exec.so debug /usr/local/bin/login.sh >> /etc/pam.d/sshd
+
+            echo ${LBLUE}==============================================================
+            echo ${LBLUE}"Изменение даты на 17 августа 2024 (суббота)"
+            echo ${LBLUE}Проверка возможности логина пользователями otusadm и otus
+            echo ${LBLUE}Пользователь otus не сможет подключиться к системе
+            echo ${LBLUE}==============================================================
+            date 081712302024
+            date
+            sshpass -p Otus2024! ssh -oStrictHostKeyChecking=no -l otus 192.168.57.10 bash -c whoami
+            sshpass -p Otus2024! ssh -oStrictHostKeyChecking=no -l otusadm 192.168.57.10 bash -c whoami
+
+            SHELL
+    end
+    end
+end
