@@ -76,7 +76,7 @@ Aug 28 18:52:08 web nginx_error: 2024/08/28 18:52:08 [error] 3317#3317: *4 direc
 root@log:~# 
 ```
 
-Поменяем атрибут у файла /etc/nginx/nginx.conf и провериv на log-сервере, что пришла информация об изменении атрибута:
+Поменяем атрибут у файла /etc/nginx/nginx.conf и проверим на log-сервере, что пришла информация об изменении атрибута:
 
 ```bash
 root@web:~# chmod g+w /etc/nginx/nginx.conf
