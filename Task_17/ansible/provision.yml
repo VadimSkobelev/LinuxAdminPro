@@ -1,0 +1,75 @@
+---
+- name: WEB | Install and configure NGINX
+  hosts: web
+  become: true
+  
+  tasks:
+   - name: WEB | Update
+     apt:
+      update_cache=yes
+
+   - name: WEB | Install NGINX
+     apt:
+      name: nginx
+      state: latest
+
+   - name: WEB | Copy nginx configuration file
+     ansible.builtin.copy:
+       src: web/nginx.conf
+       dest: /etc/nginx/nginx.conf
+
+   - name: WEB | Restart nginx
+     ansible.builtin.systemd:
+       name: nginx.service
+       state: restarted
+
+   - name: WEB | Install audit
+     apt:
+      name:
+        - auditd
+      state: latest
+
+   - name: WEB | Copy audit.rules configuration file
+     ansible.builtin.copy:
+       src: web/audit.rules
+       dest: /etc/audit/rules.d/audit.rules
+
+   - name: WEB | Copy audisp configuration file
+     ansible.builtin.copy:
+       src: web/syslog.conf
+       dest: /etc/audit/plugins.d/syslog.conf
+
+   - name: WEB | Restart auditd
+     ansible.builtin.systemd:
+       name: auditd.service
+       state: restarted
+
+   - name: WEB | Copy rsyslog configuration file
+     ansible.builtin.copy:
+       src: web/50-default.conf
+       dest: /etc/rsyslog.d/50-default.conf
+
+   - name: WEB | Restart rsyslog
+     ansible.builtin.systemd:
+       name: rsyslog.service
+       state: restarted
+
+- name: LOG | Configure log
+  hosts: log
+  become: true
+  
+  tasks:
+   - name: LOG | Update
+     apt:
+      update_cache=yes
+
+   - name: LOG | Copy rsyslog configuration file
+     ansible.builtin.copy:
+       src: log/rsyslog.conf
+       dest: /etc/rsyslog.conf
+
+   - name: LOG | Restart rsyslog
+     ansible.builtin.systemd:
+       name: rsyslog.service
+       state: restarted
+...
