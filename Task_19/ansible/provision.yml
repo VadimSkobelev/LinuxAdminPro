@@ -1,0 +1,55 @@
+---
+- name: Configure VMs
+  hosts: all
+  become: true
+  
+  tasks:
+   - name: Update
+     apt:
+      update_cache=yes
+
+   - name: Install traceroute
+     apt:
+      name: traceroute
+      state: latest
+
+   - name: Install iptables-persistent
+     apt:
+      name: iptables-persistent
+      state: latest
+     when: (ansible_hostname == "inetRouter")
+
+   - name: Disable ufw
+     systemd:
+       name: ufw.service
+       enabled: false
+       state: stopped
+     when: (ansible_hostname == "inetRouter")
+
+   - name: Set up NAT on inetRouter
+     template:
+       src: "iptables_rules.v4"
+       dest: "/etc/iptables/rules.v4"
+       owner: root
+       group: root
+       mode: "0644"
+     when: (ansible_hostname == "inetRouter")
+
+   - name: Set up forward packages across routers
+     sysctl:
+       name: net.ipv4.conf.all.forwarding
+       value: '1'
+       state: present
+     when: "'routers' in group_names"
+
+   - name: Add routes
+     template:
+       src: "50-vagrant_{{ansible_hostname}}.yaml"
+       dest: /etc/netplan/50-vagrant.yaml
+       owner: root
+       group: root
+       mode: 0644
+
+   - name: Restart all hosts
+     reboot:
+       reboot_timeout: 600
