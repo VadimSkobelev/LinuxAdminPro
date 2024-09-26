@@ -1,0 +1,102 @@
+---
+- name: Configure pxeserver VM
+  hosts: pxeserver
+  become: true
+  
+  tasks:
+   - name: Disable ufw
+     systemd:
+       name: ufw.service
+       enabled: false
+       state: stopped
+
+   - name: Update
+     apt:
+      update_cache=yes
+
+   - name: Install dnsmasq
+     apt:
+      name: dnsmasq
+      state: latest
+
+   - name: Create pxe config file for dnsmasq
+     copy:
+       src: pxe.conf
+       dest: /etc/dnsmasq.d/pxe.conf
+
+   - name: Create directory for TFTP files
+     file:
+      path: "/srv/tftp"
+      state: directory
+      mode: '0755'
+      owner: root
+      group: root
+
+   - name: Get Ubuntu Netboot tarball
+     unarchive:
+       src: https://cdimage.ubuntu.com/ubuntu-server/daily-live/current/oracular-netboot-amd64.tar.gz
+       dest: /srv/tftp
+       remote_src: yes
+
+   - name: Install apache2 and 7zip
+     apt:
+      name: 
+        - apache2
+        - 7zip
+      state: latest
+
+   - name: Create directories for iso images and automatic installation
+     file:
+      path: "/srv/{{ item }}"
+      state: directory
+      mode: '0755'
+      owner: root
+      group: root
+     loop:
+       - images
+       - ks
+
+   - name: Download Ubuntu iso
+     get_url:
+       url: https://cdimage.ubuntu.com/ubuntu-server/daily-live/current/oracular-live-server-amd64.iso
+       dest: /srv/images/oracular-live-server-amd64.iso
+
+   - name: Extract kernel and ramdisk from a LiveCD
+     community.general.iso_extract:
+       image: /srv/images/oracular-live-server-amd64.iso
+       dest: /srv/tftp/amd64/
+       files:
+         - casper/vmlinuz
+         - casper/initrd
+
+   - name: Create config files
+     copy:
+       src: "{{ item.src }}"
+       dest: "{{ item.dest }}"
+     loop:
+       - {src: 'ks-server.conf', dest: '/etc/apache2/sites-available/ks-server.conf'}
+       - {src: 'user-data', dest: '/srv/ks/user-data'}
+
+   - name: Create file for metadata
+     file:
+      path: "/srv/ks/meta-data"
+      state: touch
+      mode: '0644'
+      owner: root
+      group: root
+
+   - name: Activate apache config
+     shell: a2ensite ks-server.conf
+
+   - name: Create pxe default config file
+     copy:
+       src: default
+       dest: /srv/tftp/amd64/pxelinux.cfg/default
+
+   - name: Restart dnsmasq and apache2
+     systemd:
+      name: "{{ item }}"
+      state: restarted
+     loop:
+       - dnsmasq
+       - apache2
