@@ -1,0 +1,116 @@
+---
+- name: Configure VMs
+  hosts: all
+  become: true
+  
+  tasks:
+   - name: Update
+     apt:
+      update_cache=yes
+
+   - name: Install traceroute
+     apt:
+      name: traceroute
+      state: latest
+
+   - name: Install iptables-persistent
+     apt:
+      name: iptables-persistent
+      state: latest
+     when: (ansible_hostname != "centralServer")
+
+   - name: Install Nginx
+     apt:
+      name: nginx
+      state: latest
+     when: (ansible_hostname == "centralServer")
+
+   - name: Start Nginx
+     systemd:
+       name: nginx.service
+       enabled: true
+       state: started
+     when: (ansible_hostname == "centralServer")
+
+   - name: Disable ufw
+     systemd:
+       name: ufw.service
+       enabled: false
+       state: stopped
+     when: (ansible_hostname == "inetRouter")
+
+   - name: Set iptables rules
+     template:
+       src: "iptables_rules.v4_{{ansible_hostname}}"
+       dest: "/etc/iptables/rules.v4"
+       owner: root
+       group: root
+       mode: "0644"
+     when: (ansible_hostname == "inetRouter") or (ansible_hostname == "inetRouter2")
+
+   - name: Set up forward packages across routers
+     sysctl:
+       name: net.ipv4.conf.all.forwarding
+       value: '1'
+       state: present
+     when: "'routers' in group_names"
+
+   - name: Add routes
+     template:
+       src: "50-vagrant_{{ansible_hostname}}.yaml"
+       dest: /etc/netplan/50-vagrant.yaml
+       owner: root
+       group: root
+       mode: 0644
+
+   - name: Install knockd
+     apt:
+      name: knockd
+      state: latest
+     when: (ansible_hostname == "inetRouter") or (ansible_hostname == "centralRouter")
+
+   - name: Configure knockd (step 1)
+     copy:
+       src: "files/knockd.conf"
+       dest: "/etc/knockd.conf"
+       owner: root
+       group: root
+       mode: "0644"
+     when: (ansible_hostname == "inetRouter")
+
+   - name: Configure knockd (step 2)
+     lineinfile:
+       path: /etc/default/knockd
+       line: 'KNOCKD_OPTS="-i enp0s8"'
+     when: (ansible_hostname == "inetRouter")
+
+   - name: Configure knockd (step 3)
+     lineinfile:
+       path: /etc/default/knockd
+       regexp: '^START_KNOCKD'
+       line: 'START_KNOCKD=1'
+     when: (ansible_hostname == "inetRouter")
+
+   - name: Start knockd
+     systemd:
+       name: knockd.service
+       enabled: true
+       state: started
+     when: (ansible_hostname == "inetRouter")
+
+   - name: Configure SSH
+     lineinfile:
+       path: /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
+       regexp: '^PasswordAuthentication'
+       line: 'PasswordAuthentication yes'
+     when: (ansible_hostname == "inetRouter")
+
+   - name: Restart SSH
+     service:
+       name: sshd
+       state: restarted
+     when: (ansible_hostname == "inetRouter") 
+
+   - name: Restart all hosts
+     reboot:
+       reboot_timeout: 600

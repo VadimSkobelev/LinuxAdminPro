@@ -1,0 +1,19 @@
+---
+network:
+   version: 2
+   renderer: networkd
+   ethernets:
+     enp0s3:
+       dhcp4: true
+       dhcp4-overrides:
+           use-routes: false
+       dhcp6: false
+     enp0s8:
+       addresses:
+         - 192.168.0.2/28
+       routes:
+         - to: 0.0.0.0/0
+           via: 192.168.0.1
+     enp0s19:
+       addresses:
+         - 192.168.60.12/24
