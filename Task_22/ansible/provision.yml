@@ -1,0 +1,74 @@
+---
+- name: Configure VMs
+  hosts: all
+  become: true
+  
+  tasks:
+   - name: Update
+     apt:
+      update_cache=yes
+
+   - name: Install network diagnostic tools
+     apt:
+      name:
+        - traceroute
+        - tcpdump
+        - net-tools
+      state: latest
+
+   - name: Disable ufw
+     systemd:
+       name: ufw.service
+       enabled: false
+       state: stopped
+
+   - name: Add GPG key from frrouting.org
+     apt_key:
+       url: "https://deb.frrouting.org/frr/keys.asc"
+       state: present
+
+
+   - name: Add FRR repository
+     apt_repository:
+       repo: "deb https://deb.frrouting.org/frr {{ ansible_distribution_release }} frr-stable"
+       state: present
+       filename: frr
+
+   - name: Install FRR
+     apt:
+      name:
+        - frr
+        - frr-pythontools
+      state: latest
+
+   - name: Set up forward packages across routers
+     sysctl:
+       name: net.ipv4.conf.all.forwarding
+       value: '1'
+       state: present
+
+   - name: Set up asynchronous routing possibility
+     sysctl:
+       name: net.ipv4.conf.all.rp_filter
+       value: '0'
+       state: present
+
+   - name: Enable ospfd
+     lineinfile:
+       path: /etc/frr/daemons
+       regexp: '^ospfd='
+       line: 'ospfd=yes'
+
+   - name: FRR configuration
+     template:
+       src: "frr_{{ansible_hostname}}.conf"
+       dest: /etc/frr/frr.conf
+       owner: frr
+       group: frr
+       mode: 0640
+
+   - name: Restart FRR
+     systemd:
+       name: frr
+       state: restarted
+       enabled: true
