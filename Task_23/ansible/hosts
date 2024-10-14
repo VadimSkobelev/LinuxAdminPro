@@ -1,0 +1,5 @@
+[server]
+servervpn ansible_host=192.168.60.10 ansible_user=vagrant ansible_ssh_private_key_file=.vagrant/machines/servervpn/virtualbox/private_key
+
+[client]
+clientvpn ansible_host=192.168.60.20 ansible_user=vagrant ansible_ssh_private_key_file=.vagrant/machines/clientvpn/virtualbox/private_key

@@ -1,0 +1,59 @@
+---
+- name: Configure VMs
+  hosts: servervpn
+  become: true
+  
+  tasks:
+   - name: Update
+     ansible.builtin.apt:
+       update_cache=yes
+
+   - name: Install necessary pakages
+     ansible.builtin.apt:
+       name:
+         - openvpn
+         - easy-rsa
+       state: latest
+
+   - name: PKI Initialization
+     ansible.builtin.shell: cd /etc/openvpn/ && /usr/share/easy-rsa/easyrsa init-pki
+
+   - name: Generate keys and certificates for server
+     ansible.builtin.shell: cd /etc/openvpn/ &&
+       echo 'rasvpn' | /usr/share/easy-rsa/easyrsa build-ca nopass &&
+       echo 'rasvpn' | /usr/share/easy-rsa/easyrsa gen-req server nopass &&
+       echo 'yes' | /usr/share/easy-rsa/easyrsa sign-req server server &&
+       /usr/share/easy-rsa/easyrsa gen-dh &&
+       openvpn --genkey secret ca.key
+
+   - name: Generate certificates for client
+     ansible.builtin.shell: cd /etc/openvpn/ &&
+       echo 'client' | /usr/share/easy-rsa/easyrsa gen-req client nopass &&
+       echo 'yes' | /usr/share/easy-rsa/easyrsa sign-req client client
+
+   - name: Set iroute for client
+     ansible.builtin.shell: echo 'iroute 10.10.10.0 255.255.255.0' > /etc/openvpn/client/client
+       
+   - name: Copy configuration file
+     ansible.builtin.template: 
+       src: "server.conf"
+       dest: "/etc/openvpn/server.conf"
+       owner: root
+       group: root
+       mode: 0644
+
+   - name: Start and enable openvpn@server
+     ansible.builtin.systemd:
+       name: openvpn@server
+       state: started
+       enabled: true
+
+   - name: Get key and certificates from server
+     ansible.builtin.fetch:
+       src: "{{ item.src }}"
+       dest: "{{ item.dest }}"
+       flat: yes
+     with_items:
+       - { src: "/etc/openvpn/pki/ca.crt", dest: "/tmp/ca.crt"}
+       - { src: "/etc/openvpn/pki/issued/client.crt", dest: "/tmp/client.crt"}
+       - { src: "/etc/openvpn/pki/private/client.key", dest: "/tmp/client.key"}

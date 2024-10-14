@@ -1,0 +1,59 @@
+---
+- name: Configure VMs
+  hosts: all
+  become: true
+  
+  tasks:
+   - name: Update
+     ansible.builtin.apt:
+       update_cache=yes
+
+   - name: Install necessary pakages
+     ansible.builtin.apt:
+       name:
+         - openvpn
+         - iperf3
+         - selinux-utils
+       state: latest
+       
+   - name: Create key-file
+     ansible.builtin.shell: openvpn --genkey secret /etc/openvpn/static.key
+     when: ansible_hostname == "servervpn"
+
+   - name: Copy configuration file
+     ansible.builtin.template: 
+       src: "server_{{ansible_hostname}}.conf"
+       dest: "/etc/openvpn/server.conf"
+       owner: root
+       group: root
+       mode: 0644
+
+   - name: Copy service unit for OpenVPN
+     ansible.builtin.template: 
+       src: "openvpn@.service"
+       dest: "/etc/systemd/system/openvpn@.service"
+       owner: root
+       group: root
+       mode: 0644
+
+   - name: Copy key-file from server to client (step 1)
+     ansible.builtin.fetch:
+       src: /etc/openvpn/static.key
+       dest: /tmp/static.key
+       flat: yes
+     when: ansible_hostname == "servervpn"
+
+   - name: Copy key-file from server to client (step 2)
+     ansible.builtin.copy: 
+       src: "/tmp/static.key"
+       dest: "/etc/openvpn/static.key"
+       owner: root
+       group: root
+       mode: 0644
+     when: ansible_hostname == "clientvpn"
+
+   - name: Start and enable openvpn@server
+     ansible.builtin.systemd:
+       name: openvpn@server
+       state: started
+       enabled: true

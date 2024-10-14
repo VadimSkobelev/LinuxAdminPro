@@ -1,0 +1,33 @@
+MACHINES = {
+    :servervpn => {
+        :box_name => "ubuntu/jammy64",
+        :vm_name => "servervpn",
+        :ip => "192.168.60.10"
+    },
+
+    :clientvpn => {
+        :box_name => "ubuntu/jammy64",
+        :vm_name => "clientvpn",
+        :ip => "192.168.60.20"
+    }
+}
+
+Vagrant.configure("2") do |config|
+    MACHINES.each do |boxname, boxconfig|
+        config.vbguest.auto_update = false
+        config.vm.define boxname do |box|
+            box.vm.box = boxconfig[:box_name]
+            box.vm.host_name = boxconfig[:vm_name]
+            box.vm.network("private_network", ip: boxconfig[:ip])
+    
+            if boxconfig[:vm_name] == "clientvpn"
+                box.vm.provision "ansible" do |ansible|
+                    ansible.playbook = "ansible/provision.yml"
+                    ansible.inventory_path = "ansible/hosts"
+                    ansible.host_key_checking = "false"
+                    ansible.limit = "all"
+                end
+            end
+        end
+    end
+end
