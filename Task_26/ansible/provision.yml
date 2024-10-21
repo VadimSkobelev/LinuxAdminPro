@@ -1,0 +1,60 @@
+---
+- name: Base set up
+  hosts: all
+  become: true
+  tasks:
+   - name: Set repository on CentOS
+     ansible.builtin.shell: sed -i s/mirror.centos.org/vault.centos.org/g /etc/yum.repos.d/*.repo &&
+       sed -i s/^#.*baseurl=http/baseurl=http/g /etc/yum.repos.d/*.repo &&
+       sed -i s/^mirrorlist=http/#mirrorlist=http/g /etc/yum.repos.d/*.repo
+     when: (ansible_os_family == "RedHat")
+
+   - name: Disable firewalld
+     ansible.builtin.systemd:
+       name: firewalld
+       state: stopped
+       enabled: false
+
+   - name: Disable SElinux
+     ansible.posix.selinux:
+       state: disabled
+
+   - name: Disable SElinux now
+     ansible.builtin.shell: setenforce 0
+
+   - name: Set up Timezone
+     community.general.timezone:
+       name: "Europe/Moscow"
+
+   - name: Add ipa.otus.lan to /etc/hosts
+     ansible.builtin.lineinfile:
+      path: /etc/hosts
+      line: 192.168.57.10 ipa.otus.lan ipa
+
+   - name: Update
+     ansible.builtin.yum:
+       update_cache: true
+
+   - name: Install ipa-server
+     ansible.builtin.yum:
+       name:
+         - '@idm:DL1'
+         - ipa-server
+       state: present
+     when: "'server' in group_names"
+
+   - name: Set up ipa-server
+     ansible.builtin.shell: echo -e "no\nyes" | ipa-server-install --hostname=ipa.otus.lan -n otus.lan -r OTUS.LAN -p manager2023 -a admin1234 --netbios-name=OTUS --no-ntp
+     when: "'server' in group_names"
+
+   - name: Install module ipa-client
+     ansible.builtin.yum:
+       name:
+         - freeipa-client
+       state: present
+       update_cache: true
+     when: "'clients' in group_names"
+
+   - name: Add host to ipa-server
+     ansible.builtin.shell: echo -e "yes\nyes" | ipa-client-install --mkhomedir --domain=OTUS.LAN --server=ipa.otus.lan --no-ntp -p admin -w admin1234
+     when: "'clients' in group_names"
