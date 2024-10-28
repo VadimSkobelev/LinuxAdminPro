@@ -1,0 +1,146 @@
+---
+- name: Set up VMs
+  hosts: all
+  become: true
+    
+  vars:
+    mysql_root_password: "str0ngRootP@ssw0rd!$$"
+    repl_user: "repl"
+    mysql_repl_user_password: "!OtusLinux2018" 
+
+  tasks:
+   - name: Set repository on CentOS
+     ansible.builtin.shell: sed -i s/mirror.centos.org/vault.centos.org/g /etc/yum.repos.d/*.repo &&
+       sed -i s/^#.*baseurl=http/baseurl=http/g /etc/yum.repos.d/*.repo &&
+       sed -i s/^mirrorlist=http/#mirrorlist=http/g /etc/yum.repos.d/*.repo
+     when: (ansible_os_family == "RedHat")
+
+   - name: Install Percona yum repository
+     ansible.builtin.yum:
+       name: https://repo.percona.com/yum/percona-release-latest.noarch.rpm
+       state: present
+       
+   - name: Enable the Percona Server 5.7 repository
+     ansible.builtin.shell: percona-release setup ps57
+     become: true
+
+   - name: Install Percona Server for MySQL
+     ansible.builtin.yum:
+       name:
+         - Percona-Server-server-57
+         - MySQL-python
+       state: present
+       update_cache: true
+
+   - name: Copy MySQL configuration files
+     ansible.builtin.template:
+       src: "{{ item.src }}"
+       dest: /etc/my.cnf.d/{{ item.dest }}
+       owner: root
+       group: root
+       mode: 0644
+     with_items:
+       - { src: 01-basics.cnf.j2, dest: 01-basics.cnf }
+       - { src: 02-max-connections.cnf, dest: 02-max-connections.cnf }
+       - { src: 03-performance.cnf, dest: 03-performance.cnf }
+       - { src: 04-slow-query.cnf, dest: 04-slow-query.cnf }
+       - { src: 05-binlog.cnf.j2, dest: 05-binlog.cnf }
+
+   - name: Start and enable mysql
+     ansible.builtin.systemd:
+       name: mysql
+       state: restarted
+       enabled: true
+
+   - name: Get default temporary root password
+     ansible.builtin.shell: "cat /var/log/mysqld.log | grep 'root@localhost:' | awk '{print $11}'"
+     register: mysql_temp_password
+
+   - name: Set root user password
+     ansible.builtin.command: mysql --user root --password={{ mysql_temp_password.stdout }} --connect-expired-password --execute="ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mysql_root_password }}';"
+
+   - name: Restart mysql
+     ansible.builtin.systemd:
+       name: mysql
+       state: restarted          
+      
+   - name: Restore database
+     community.mysql.mysql_db:
+       login_user: root
+       login_password: "{{ mysql_root_password }}"
+       name: bet
+       state: import
+       target: /vagrant/ansible/files/bet.dmp
+     when: (ansible_hostname == "master")
+
+   - name: Create mysql user for replication
+     community.mysql.mysql_user:
+       login_user: root
+       login_password: "{{ mysql_root_password }}"
+       name: "{{ repl_user }}"
+       password: "{{ mysql_repl_user_password }}"
+       priv: '*.*:REPLICATION SLAVE'
+       state: present
+       host: '%'
+     when: (ansible_hostname == "master")
+
+   - name: Dump database from master
+     community.mysql.mysql_db:
+       login_user: root
+       login_password: "{{ mysql_root_password }}"
+       state: dump
+       name: all
+       target: /tmp/master.sql
+       ignore_tables:
+         - bet.events_on_demand
+         - bet.v_same_event
+       dump_extra_args: --triggers --routines
+     when: (ansible_hostname == "master")
+
+   - name: Fetch dump file to the host
+     ansible.builtin.fetch:
+       src: /tmp/master.sql
+       dest: /tmp/master.sql
+       flat: true
+     when: (ansible_hostname == "master")
+
+   - name: Copy dump file from host to slave
+     ansible.builtin.copy:
+       src: /tmp/master.sql
+       dest: /tmp/master.sql
+     when: (ansible_hostname == "slave")
+
+   - name: RESET MASTER on slave before loading the dump file to avoid ERROR 1840
+     community.mysql.mysql_replication:
+       login_user: root
+       login_password: "{{ mysql_root_password }}"
+       mode: resetmaster
+     when: (ansible_hostname == "slave") 
+
+   - name: Restore database to slave
+     community.mysql.mysql_db:
+       login_user: root
+       login_password: "{{ mysql_root_password }}"
+       name: all
+       state: import
+       target: /tmp/master.sql
+     when: (ansible_hostname == "slave")
+
+   - name: Configure replication
+     community.mysql.mysql_replication:
+       login_user: root
+       login_password: "{{ mysql_root_password }}"
+       mode: changemaster
+       master_host: "192.168.60.150"
+       master_user: "{{ repl_user }}"
+       master_password: "{{ mysql_repl_user_password }}"
+       master_port: 3306
+       master_auto_position: true
+     when: (ansible_hostname == "slave")
+
+   - name: Start replication
+     community.mysql.mysql_replication:
+       login_user: root
+       login_password: "{{ mysql_root_password }}"
+       mode: startslave
+     when: (ansible_hostname == "slave")
