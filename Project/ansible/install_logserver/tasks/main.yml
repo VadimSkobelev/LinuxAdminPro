@@ -1,0 +1,261 @@
+---
+- name: BACKUP | Install EPEL repository
+  ansible.builtin.yum:
+    name: epel-release
+    state: latest
+
+- name: BACKUP | Install BorgBackup
+  ansible.builtin.yum:
+    name: borgbackup
+    state: latest
+
+- name: BACKUP | Add user borg
+  ansible.builtin.user:
+    name: borg
+    password: borg
+
+- name: BACKUP | Create directory for MySQL backups /backups/mysql
+  ansible.builtin.file:
+    path: /backups/mysql/{{ item }}
+    state: directory
+    owner: borg
+    group: borg
+    recurse: true
+    mode: 0744
+  loop:
+    - db1
+    - db2
+
+- name: BACKUP | Clear backup directory
+  ansible.builtin.shell: rm -rf /backups/mysql/{{ item }}/*
+  loop:
+    - db1
+    - db2
+
+- name: BACKUP | Create .ssh directory for borg user
+  ansible.builtin.file:
+    path: "/home/borg/.ssh"
+    state: directory
+    mode: 0700
+    owner: borg
+    group: borg
+
+- name: BACKUP | Create authorized_keys file for borg user
+  ansible.builtin.file:
+    path: "/home/borg/.ssh/authorized_keys"
+    state: touch
+    mode: 0600
+    owner: borg
+    group: borg
+
+- name: BACKUP | db1 | Install and configure BorgBackup
+  delegate_to: db1
+  become: true
+  vars:
+    backup_server_ip: 10.10.60.7
+  block:
+    - name: BACKUP | db1 | Install EPEL repository
+      ansible.builtin.yum:
+        name: epel-release
+        state: latest
+
+    - name: BACKUP | db1 | Install BorgBackup
+      ansible.builtin.yum:
+        name: borgbackup
+        state: latest
+
+    - name: BACKUP | db1 | Create /var/log/borgbackup
+      ansible.builtin.file:
+        path: /var/log/borgbackup
+        state: directory
+        mode: 0666
+        owner: root
+        group: root
+
+    - name: BACKUP | db1 | Create log file for BorgBackup
+      ansible.builtin.file:
+        path: /var/log/borgbackup/borgbackup.log
+        state: touch
+        mode: 0666
+        owner: root
+        group: root
+
+    - name: BACKUP | db1 | Create rsyslog config file for borg
+      ansible.builtin.copy:
+        src: borgbackup.conf
+        dest: /etc/rsyslog.d/borgbackup.conf
+
+    - name: BACKUP | db1 | Restart rsyslog
+      ansible.builtin.systemd:
+        name: rsyslog
+        state: restarted
+
+    - name: BACKUP | db1 | Generate ssh keys for root user
+      ansible.builtin.user:
+        name: root
+        generate_ssh_key: true
+
+    - name: BACKUP | db1 | Pull public ssh key
+      ansible.builtin.shell: cat /root/.ssh/id_rsa.pub
+      register: ssh_key_db1
+
+    - name: BACKUP | db1 | Put ssh public key on backup server
+      ansible.posix.authorized_key:
+        user: borg
+        key: "{{ ssh_key_db1.stdout }}"
+      delegate_to: logserver
+
+    - name: BACKUP | db1 | Create known_hosts file
+      ansible.builtin.file:
+        path: /root/.ssh/known_hosts
+        state: touch
+        mode: 0600
+        owner: root
+        group: root
+
+    - name: BACKUP | db1 | Add backup-server into known_hosts
+      ansible.builtin.shell: 'ssh-keyscan -H {{ backup_server_ip }} >> /root/.ssh/known_hosts'
+
+    - name: BACKUP | db1 | Initializing borg repository on the logserver
+      ansible.builtin.shell: borg init --encryption=repokey borg@{{ backup_server_ip }}:/backups/mysql/db1/
+      environment:
+        BORG_PASSPHRASE: backup1234
+
+    - name: BACKUP | db1 | Copy borg configuration files
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /etc/systemd/system
+      loop:
+        - borg-backup.service
+        - borg-backup.timer
+    
+    - name: BACKUP | db1 | Correction of borg-backup.service
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/system/borg-backup.service
+        line: Environment=REPO=borg@10.10.60.7:/backups/mysql/db1/
+
+    - name: BACKUP | db1 | Enable and start borg backup timer
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: started
+        daemon_reload: true
+        enabled: true
+      loop:
+        - borg-backup.service
+        - borg-backup.timer
+
+    - name: BACKUP | db1 | Restart borg-backup.service
+      ansible.builtin.systemd:
+        name: borg-backup.service
+        state: restarted
+
+- name: BACKUP | db2 | Install and configure BorgBackup
+  delegate_to: db2
+  become: true
+  vars:
+    backup_server_ip: 10.10.60.7
+  block:
+    - name: BACKUP | db2 | Install EPEL repository
+      ansible.builtin.yum:
+        name: epel-release
+        state: latest
+
+    - name: BACKUP | db2 | Install BorgBackup
+      ansible.builtin.yum:
+        name: borgbackup
+        state: latest
+
+    - name: BACKUP | db2 | Create /var/log/borgbackup
+      ansible.builtin.file:
+        path: /var/log/borgbackup
+        state: directory
+        mode: 0666
+        owner: root
+        group: root
+
+    - name: BACKUP | db2 | Create log file for BorgBackup
+      ansible.builtin.file:
+        path: /var/log/borgbackup/borgbackup.log
+        state: touch
+        mode: 0666
+        owner: root
+        group: root
+
+    - name: BACKUP | db2 | Create rsyslog config file for borg
+      ansible.builtin.copy:
+        src: borgbackup.conf
+        dest: /etc/rsyslog.d/borgbackup.conf
+
+    - name: BACKUP | db2 | Restart rsyslog
+      ansible.builtin.systemd:
+        name: rsyslog
+        state: restarted
+
+    - name: BACKUP | db2 | Generate ssh keys for root user
+      ansible.builtin.user:
+        name: root
+        generate_ssh_key: true
+
+    - name: BACKUP | db2 | Pull public ssh key
+      ansible.builtin.shell: cat /root/.ssh/id_rsa.pub
+      register: ssh_key_db2
+
+    - name: BACKUP | db2 | Put ssh public key on backup server
+      ansible.posix.authorized_key:
+        user: borg
+        key: "{{ ssh_key_db2.stdout }}"
+      delegate_to: logserver
+
+    - name: BACKUP | db2 | Create known_hosts file
+      ansible.builtin.file:
+        path: /root/.ssh/known_hosts
+        state: touch
+        mode: 0600
+        owner: root
+        group: root
+
+    - name: BACKUP | db2 | Add backup-server into known_hosts
+      ansible.builtin.shell: 'ssh-keyscan -H {{ backup_server_ip }} >> /root/.ssh/known_hosts'
+
+    - name: BACKUP | db2 | Initializing borg repository on the logserver
+      ansible.builtin.shell: borg init --encryption=repokey borg@{{ backup_server_ip }}:/backups/mysql/db2/
+      environment:
+        BORG_PASSPHRASE: backup1234
+
+    - name: BACKUP | db2 | Copy borg configuration files
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /etc/systemd/system
+      loop:
+        - borg-backup.service
+        - borg-backup.timer
+    
+    - name: BACKUP | db2 | Correction of borg-backup.service
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/system/borg-backup.service
+        line: Environment=REPO=borg@10.10.60.7:/backups/mysql/db2/
+
+    - name: BACKUP | db2 | Enable and start borg backup timer
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: started
+        daemon_reload: true
+        enabled: true
+      loop:
+        - borg-backup.service
+        - borg-backup.timer
+
+    - name: BACKUP | db2 | Restart borg-backup.service
+      ansible.builtin.systemd:
+        name: borg-backup.service
+        state: restarted
+
+- name: LOG | Copy rsyslog configuration file
+  ansible.builtin.copy:
+    src: rsyslog.conf
+    dest: /etc/rsyslog.conf
+
+- name: LOG | Restart rsyslog
+  ansible.builtin.systemd:
+    name: rsyslog.service
+    state: restarted

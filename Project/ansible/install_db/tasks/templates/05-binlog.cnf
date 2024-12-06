@@ -1,0 +1,9 @@
+[mysqld]
+log-bin = mysql-bin
+log-bin-index = mysql-bin.index
+relay-log = mysql-relay
+relay-log-index = mysql-relay.index
+expire-logs-days = 7
+max-binlog-size = 16M
+binlog-format = "MIXED"
+skip-external-locking

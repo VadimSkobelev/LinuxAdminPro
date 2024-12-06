@@ -1,0 +1,367 @@
+---
+- name: DB | Install Percona yum repository
+  ansible.builtin.yum:
+    name: https://repo.percona.com/yum/percona-release-latest.noarch.rpm
+    state: present
+       
+- name: DB | Enable Percona Server 5.7 repository
+  ansible.builtin.shell: percona-release setup ps57
+  become: true
+
+- name: DB | Install Percona Server for MySQL and Keepalived
+  ansible.builtin.yum:
+    name:
+      - Percona-Server-server-57
+      - MySQL-python
+      - percona-xtrabackup-24
+      - keepalived
+    state: present
+    update_cache: true
+
+- name: DB | Copy MySQL configuration files
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: /etc/my.cnf.d/{{ item.dest }}
+    owner: root
+    group: root
+    mode: 0644
+  with_items:
+    - { src: 01-basics.cnf.j2, dest: 01-basics.cnf }
+    - { src: 02-max-connections.cnf, dest: 02-max-connections.cnf }
+    - { src: 03-performance.cnf, dest: 03-performance.cnf }
+    - { src: 04-slow-query.cnf, dest: 04-slow-query.cnf }
+    - { src: 05-binlog.cnf, dest: 05-binlog.cnf }
+
+- name: DB | Start and enable mysql
+  ansible.builtin.systemd:
+    name: mysql
+    state: restarted
+    enabled: true
+
+- name: DB | Get default temporary root password
+  ansible.builtin.shell: "cat /var/log/mysqld.log | grep 'root@localhost:' | awk '{print $11}'"
+  register: mysql_temp_password
+
+- name: DB | Set root user password
+  ansible.builtin.command: mysql --user root --password={{ mysql_temp_password.stdout }} --connect-expired-password --execute="ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mysql_root_password }}';"
+
+- name: DB | Restart mysql
+  ansible.builtin.systemd:
+    name: mysql
+    state: restarted
+
+- name: DB | Create database for WordPress
+  community.mysql.mysql_db:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    name:  "{{ db_name }}"
+    state: present
+
+- name: DB | Create mysql user for WordPress
+  community.mysql.mysql_user:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"      
+    name: "{{ mysql_wordpress_user }}"
+    password: "{{ mysql_repl_user_password }}"
+    priv: 'wordpress.*:ALL'
+    state: present
+    host: '%'
+
+- name: DB | Create mysql user for replication
+  community.mysql.mysql_user:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    name: "{{ repl_user }}"
+    password: "{{ mysql_repl_user_password }}"
+    priv: '*.*:REPLICATION SLAVE'
+    state: present
+    host: '%'
+
+- name: DB | Create monitor user for monitoring
+  community.mysql.mysql_user:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    name: "{{ monitor_user }}"
+    password: "{{ mysql_monitor_user_password }}"
+    priv: 'performance_schema.*:SELECT'
+    state: present
+    host: '%'
+
+- name: DB | db1 | Configure replication if db1 is setting up
+  when: (ansible_hostname == "db1")
+  block:
+    - name: DB | db1 | Check uptime db1
+      ansible.builtin.shell: cut -d ' ' -f1 /proc/uptime
+      register: uptime_db1
+
+    - name: DB | db1 | Check uptime db2
+      delegate_to: db2
+      ansible.builtin.shell: cut -d ' ' -f1 /proc/uptime
+      register: uptime_db2
+
+    - name: DB | db1 | Stop replication from db1 to db2
+      delegate_to: db2
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: stopslave
+
+    - name: DB | db1 | Stop replication from db2 to db1
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: stopslave
+
+    - name: DB | db1 | Dump all databases from db2 to dump.sql
+      delegate_to: db2
+      community.mysql.mysql_db:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        state: dump
+        name: all
+        target: /tmp/dump.sql
+        master_data: 1
+      when: (uptime_db2.stdout | float) > (uptime_db1.stdout | float)
+
+    - name: DB | db1 | Fetch dump.sql file to the host
+      delegate_to: db2
+      ansible.builtin.fetch:
+        src: /tmp/dump.sql
+        dest: /tmp/dump.sql
+        flat: true
+      when: (uptime_db2.stdout | float) > (uptime_db1.stdout | float)
+
+    - name: DB | db1 | Copy dump.sql file from host to db1
+      ansible.builtin.copy:
+        src: /tmp/dump.sql
+        dest: /tmp/dump.sql
+      when: (uptime_db2.stdout | float) > (uptime_db1.stdout | float)
+
+    - name: DB | db1 | Restore database from db2 to db1
+      community.mysql.mysql_db:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        name: all
+        state: import
+        target: /tmp/dump.sql
+      when: (uptime_db2.stdout | float) > (uptime_db1.stdout | float)
+
+    - name: DB | db1 | Get db1 binlog file name and binlog position
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: getmaster
+      register: db1
+
+    - name: DB | db1 | Get db2 binlog file name and binlog position
+      delegate_to: db2
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: getmaster
+      register: db2
+
+    - name: DB | db1 | Configure replication from db1 to db2
+      delegate_to: db2
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: changemaster
+        master_host: "{{ db1_host_ip }}"
+        master_user: '{{ repl_user }}'
+        master_password: '{{ mysql_repl_user_password }}'
+        master_log_file: '{{ db1.File }}'
+        master_log_pos: '{{ db1.Position }}'
+
+    - name: DB | db1 | Configure replication from db2 to db1
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: changemaster
+        master_host: "{{ db2_host_ip }}"
+        master_user: '{{ repl_user }}'
+        master_password: '{{ mysql_repl_user_password }}'
+        master_log_file: '{{ db2.File }}'
+        master_log_pos: '{{ db2.Position }}'
+
+    - name: DB | db1 | Start replication from db1 to db2
+      delegate_to: db2
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: startslave
+
+    - name: DB | db1 | Start replication from db2 to db1
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: startslave
+
+- name: DB | db2 | Configure replication if db2 is setting up
+  when: (ansible_hostname == "db2")
+  block:
+    - name: DB | db2 | Check uptime db2
+      ansible.builtin.shell: cut -d ' ' -f1 /proc/uptime
+      register: uptime_db2
+
+    - name: DB | db2 | Check uptime db1
+      delegate_to: db1
+      ansible.builtin.shell: cut -d ' ' -f1 /proc/uptime
+      register: uptime_db1
+
+    - name: DB | db2 | Stop replication from db2 to db1
+      delegate_to: db1
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: stopslave
+
+    - name: DB | db2 | Stop replication from db1 to db2
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: stopslave
+
+    - name: DB | db2 | Dump all databases from db1 to dump.sql
+      delegate_to: db1
+      community.mysql.mysql_db:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        state: dump
+        name: all
+        target: /tmp/dump.sql
+        master_data: 1
+      when: (uptime_db1.stdout | float) > (uptime_db2.stdout | float)
+
+    - name: DB | db2 | Fetch dump.sql file to the host
+      delegate_to: db1
+      ansible.builtin.fetch:
+        src: /tmp/dump.sql
+        dest: /tmp/dump.sql
+        flat: true
+      when: (uptime_db1.stdout | float) > (uptime_db2.stdout | float)
+
+    - name: DB | db2 | Copy dump.sql file from host to db2
+      ansible.builtin.copy:
+        src: /tmp/dump.sql
+        dest: /tmp/dump.sql
+      when: (uptime_db1.stdout | float) > (uptime_db2.stdout | float)
+
+    - name: DB | db2 | Restore database from db1 to db2
+      community.mysql.mysql_db:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        name: all
+        state: import
+        target: /tmp/dump.sql
+      when: (uptime_db1.stdout | float) > (uptime_db2.stdout | float)
+
+    - name: DB | db2 | Get db2 binlog file name and binlog position
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: getmaster
+      register: db2
+
+    - name: DB | db2 | Get db1 binlog file name and binlog position
+      delegate_to: db1
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: getmaster
+      register: db1
+
+    - name: DB | db2 | Configure replication from db2 to db1
+      delegate_to: db1
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: changemaster
+        master_host: "{{ db2_host_ip }}"
+        master_user: '{{ repl_user }}'
+        master_password: '{{ mysql_repl_user_password }}'
+        master_log_file: '{{ db2.File }}'
+        master_log_pos: '{{ db2.Position }}'
+
+    - name: DB | db2 | Configure replication from db1 to db2
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: changemaster
+        master_host: "{{ db1_host_ip }}"
+        master_user: '{{ repl_user }}'
+        master_password: '{{ mysql_repl_user_password }}'
+        master_log_file: '{{ db1.File }}'
+        master_log_pos: '{{ db1.Position }}'
+
+    - name: DB | db2 | Start replication from db2 to db1
+      delegate_to: db1
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: startslave
+
+    - name: DB | db2 | Start replication from db1 to db2
+      community.mysql.mysql_replication:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        mode: startslave
+
+- name: DB | Create backup directory /mysql-backup
+  ansible.builtin.file:
+    path: /mysql-backup
+    state: directory
+    mode: 0744
+
+- name: DB | Copy backup database script
+  ansible.builtin.copy:
+    src: mysql-backup.sh
+    dest: /root/mysql-backup.sh
+    mode: 0755
+
+- name: DB | Copy service unit files for MySQL backup
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: /etc/systemd/system/
+  loop:
+    - backup.service
+    - backup.timer
+
+- name: DB | Start service for MySQL backup
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - backup.timer
+    - backup.service
+
+- name: DB | Create virtual Interface ifcfg-eth1:1 
+  ansible.builtin.template: 
+    src: ifcfg-eth1:1
+    dest: /etc/sysconfig/network-scripts/ifcfg-eth1:1 
+    owner: root 
+    group: root 
+    mode: 0600
+
+- name: DB | Configure Keepalived
+  ansible.builtin.template: 
+    src: keepalived.conf
+    dest: /etc/keepalived/keepalived.conf 
+    owner: root 
+    group: root 
+    mode: 0644
+
+- name: DB | Copy Keepalived script
+  ansible.builtin.template:
+    src: mysqltest.sh 
+    dest: /etc/keepalived/
+    owner: root 
+    group: root 
+    mode: 0755
+
+- name: DB | Restart Keepalived
+  ansible.builtin.systemd:
+    name: keepalived
+    state: restarted
+    enabled: true

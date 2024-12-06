@@ -1,0 +1,73 @@
+---
+- name: BACKEND | Install Remi repository
+  ansible.builtin.yum:
+    name: https://rpms.remirepo.net/enterprise/remi-release-7.rpm
+    state: latest
+
+- name: BACKEND | Install PHP74 packages
+  ansible.builtin.yum:
+    name:
+      - php74-php 
+      - php74-php-common
+      - php74-php-fpm 
+      - php74-php-mysqlnd 
+      - php74-php-opcache 
+      - php74-php-xml 
+      - php74-php-gd 
+      - php74-php-pear 
+      - php74-php-json
+      - php74-php-mbstring
+    state: present
+
+- name: BACKEND | Start and enable php74-php-fpm
+  ansible.builtin.systemd:
+    name: php74-php-fpm
+    state: restarted
+    enabled: true
+
+- name: BACKEND | Download Wordpress
+  ansible.builtin.unarchive:
+    src : http://wordpress.org/latest.tar.gz
+    dest: /tmp/
+    remote_src: yes
+
+- name: BACKEND | Create a directory /var/www/html/example.com/
+  ansible.builtin.file:
+    path: /var/www/html/example.com
+    state: directory
+    mode: 0755
+
+- name: BACKEND | Configure Wordpress (step 1)
+  ansible.builtin.shell: mv /tmp/wordpress/* /var/www/html/example.com
+
+- name: BACKEND | Configure Wordpress (step 2)
+  ansible.builtin.copy:
+    src: wp-config.php
+    dest: /var/www/html/example.com/wp-config.php
+    owner: apache
+    group: apache
+    mode: 0666
+    
+- name: BACKEND | Set ownership and permissions for WordPress files
+  ansible.builtin.file:
+    path: /var/www/html/
+    owner: apache
+    group: apache
+    recurse: true
+
+- name: BACKEND | Configure Apache virtual host for WordPress
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: 0644
+  with_items:
+    - { src: example.com.conf, dest: /etc/httpd/conf.d/example.com.conf }
+    - { src: httpd.conf.j2, dest: /etc/httpd/conf/httpd.conf }
+
+- name: BACKEND | Restart Apache
+  ansible.builtin.systemd:
+    name: httpd
+    state: restarted
+    enabled: true

@@ -1,0 +1,48 @@
+---
+- name: Base VM configuration
+  hosts: all
+  become: true
+  roles:
+    - baseconfig
+  tags:
+    - always
+
+- name: Install MySQL and set up replication
+  hosts: db1,db2
+  become: true
+  roles:
+    - install_db
+  tags:
+    - db
+
+- name: Set up backend
+  hosts: backend1,backend2
+  become: true
+  roles:
+    - install_backend
+  tags:
+    - backend
+
+- name: Set up frontend
+  hosts: frontend
+  become: true
+  roles:
+    - install_frontend
+  tags:
+    - frontend
+
+- name: Set up monitoring
+  hosts: monitor
+  become: true
+  roles:
+    - install_monitor
+  tags:
+    - monitor
+
+- name: Set up logs collecting server
+  hosts: logserver
+  become: true
+  roles:
+    - install_logserver
+  tags:
+    - logserver

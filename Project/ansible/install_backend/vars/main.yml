@@ -1,0 +1,5 @@
+---
+db_name: "wordpress"
+mysql_wordpress_user: wp
+mysql_wordpress_user_password: "!OtusLinux2024"
+db_host_ip: "10.10.60.10"

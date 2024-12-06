@@ -1,0 +1,7 @@
+[Unit]
+Description=Run MySQL backup every 10 min
+[Timer]
+OnUnitActiveSec=600
+Unit=backup.service
+[Install]
+WantedBy=multi-user.target

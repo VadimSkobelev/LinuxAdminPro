@@ -1,0 +1,81 @@
+---
+- name: FRONTEND | Configure iptables
+  become: true  
+  block:
+    - name: FRONTEND | ACCEPT for all interfaces except eth2
+      ansible.builtin.iptables:
+        chain: INPUT
+        action: append
+        in_interface: "!eth2"
+        jump: ACCEPT
+
+    - name: FRONTEND | DROP INVALID packets
+      ansible.builtin.iptables:
+        chain: INPUT
+        action: append
+        ctstate: INVALID
+        jump: DROP
+    
+    - name: FRONTEND | ACCEPT ICMP
+      ansible.builtin.iptables:
+        chain: INPUT
+        action: append
+        protocol: icmp
+        jump: ACCEPT
+
+    - name: FRONTEND | ACCEPT ESTABLISHED,RELATED connections
+      ansible.builtin.iptables:
+        chain: INPUT
+        action: append
+        ctstate: ESTABLISHED,RELATED
+        jump: ACCEPT
+
+    - name: FRONTEND | ACCEPT NEW coonections for ports 80,443
+      ansible.builtin.iptables:
+        chain: INPUT
+        action: append
+        protocol: tcp
+        ctstate: NEW
+        destination_port: "{{ item }}"
+        jump: ACCEPT
+      loop:
+        - 80
+        - 443
+
+    - name: FRONTEND | Update INPUT policy to DROP
+      ansible.builtin.iptables:
+        chain: INPUT
+        policy: DROP 
+
+- name: FRONTEND | Add Nginx repository
+  ansible.builtin.template:
+    src: nginx.repo
+    dest: /etc/yum.repos.d/nginx.repo
+
+- name: FRONTEND | Install Nginx and necessary packages
+  ansible.builtin.yum:
+    name:
+      - nginx
+      - mod_ssl
+      - openssl
+    state: present
+
+- name: FRONTEND | Generate private key
+  ansible.builtin.shell: openssl genrsa -out /etc/nginx/conf.d/ca.key 2048
+
+- name: FRONTEND | Generate CSR
+  ansible.builtin.shell: openssl req -new -key /etc/nginx/conf.d/ca.key -out /etc/nginx/conf.d/ca.csr -subj "/C=GB/ST=London/L=London/O=Global Security/OU=IT Department/CN=example.com"
+
+- name: FRONTEND | Generate Self Signed Key
+  ansible.builtin.shell: openssl x509 -req -days 365 -in /etc/nginx/conf.d/ca.csr -signkey /etc/nginx/conf.d/ca.key -out /etc/nginx/conf.d/ca.crt
+
+- name: FRONTEND | Configure Nginx
+  ansible.builtin.template:
+    src: nginx.conf
+    dest: /etc/nginx/conf.d/default.conf
+
+- name: FRONTEND | Start and enable Nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: restarted
+    enabled: true

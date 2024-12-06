@@ -1,0 +1,87 @@
+---
+- name: MONITORING | Install Prometheus
+  ansible.builtin.unarchive:
+    src : https://github.com/prometheus/prometheus/releases/download/v2.44.0/prometheus-2.44.0.linux-amd64.tar.gz
+    dest: /tmp/
+    remote_src: yes
+
+- name: MONITORING | Add user prometheus
+  ansible.builtin.user:
+    name: prometheus
+    create_home: false
+    shell: /bin/false
+
+- name: MONITORING | Create directorys for prometheus
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: prometheus
+    group: prometheus
+    recurse: true
+    mode: 0744
+  loop:
+    - /etc/prometheus
+    - /var/lib/prometheus
+
+- name: MONITORING | Configure Prometheus (step 1)
+  ansible.builtin.copy:
+    src: /tmp/prometheus-2.44.0.linux-amd64/{{ item }}
+    dest: /usr/local/bin/{{ item }}
+    owner: prometheus
+    group: prometheus
+    mode: 0744
+    remote_src: true
+  loop:
+    - prometheus
+    - promtool
+
+- name: MONITORING | Configure Prometheus (step 2)
+  ansible.builtin.copy:
+    src: /tmp/prometheus-2.44.0.linux-amd64/{{ item }}
+    dest: /etc/prometheus/{{ item }}
+    owner: prometheus
+    group: prometheus
+    mode: 0744
+    remote_src: true
+  loop:
+    - consoles
+    - console_libraries
+
+- name: MONITORING | Copy Prometheus configuration file
+  ansible.builtin.copy:
+    src: prometheus.yml
+    dest: /etc/prometheus/prometheus.yml
+    owner: prometheus
+    group: prometheus
+
+- name: MONITORING | Copy prometheus.service
+  ansible.builtin.copy:
+    src: prometheus.service
+    dest: /etc/systemd/system/prometheus.service
+
+- name: MONITORING | Enable and start prometheus
+  ansible.builtin.systemd:
+    name: prometheus.service
+    state: started
+    daemon_reload: true
+    enabled: true
+
+- name: MONITORING | Install Grafana
+  ansible.builtin.yum:
+    name: https://dl.grafana.com/enterprise/release/grafana-enterprise-11.1.4-1.x86_64.rpm
+    state: present
+
+- name: MONITORING | Copy Grafana db
+  ansible.builtin.copy:
+    src: grafana.db
+    dest: /var/lib/grafana/grafana.db
+    owner: grafana
+    group: grafana
+    mode: 0640
+
+- name: MONITORING | Enable and start prometheus
+  ansible.builtin.systemd:
+    name: grafana-server
+    state: started
+    daemon_reload: true
+    enabled: true

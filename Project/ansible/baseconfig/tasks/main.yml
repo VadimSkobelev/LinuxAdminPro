@@ -1,0 +1,71 @@
+---
+- name: BASECONFIG | Update
+  ansible.builtin.yum:
+    update_cache=yes
+
+- name: BASECONFIG | Set repository on CentOS
+  ansible.builtin.shell: sed -i s/mirror.centos.org/vault.centos.org/g /etc/yum.repos.d/*.repo &&
+    sed -i s/^#.*baseurl=http/baseurl=http/g /etc/yum.repos.d/*.repo &&
+    sed -i s/^mirrorlist=http/#mirrorlist=http/g /etc/yum.repos.d/*.repo
+
+- name: BASECONFIG | Set timezone to Europe/Moscow
+  community.general.timezone: 
+    name: Europe/Moscow
+
+- name: BASECONFIG | Disable SElinux
+  ansible.posix.selinux:
+    state: disabled
+
+- name: BASECONFIG | Disable SElinux now
+  ansible.builtin.shell: setenforce 0
+
+- name: BASECONFIG | Disable firewalld
+  ansible.builtin.systemd:
+    name: firewalld
+    state: stopped
+    enabled: false
+
+- name: BASECONFIG | Install necessary packages
+  ansible.builtin.yum:
+    name:
+      - traceroute
+      - telnet
+      - tree
+    state: latest
+
+- name: BASECONFIG | Copy rsyslog configuration file
+  ansible.builtin.copy:
+    src: 50-default.conf
+    dest: /etc/rsyslog.d/50-default.conf
+
+- name: BASECONFIG | Restart rsyslog
+  ansible.builtin.systemd:
+    name: rsyslog.service
+    state: restarted
+
+- name: BASECONFIG | Download Node Exporter
+  ansible.builtin.unarchive:
+    src : https://github.com/prometheus/node_exporter/releases/download/v1.5.0/node_exporter-1.5.0.linux-amd64.tar.gz
+    dest: /tmp/
+    remote_src: yes
+
+- name: BASECONFIG | Add user nodeusr
+  ansible.builtin.user:
+    name: nodeusr
+    create_home: false
+    shell: /bin/false
+
+- name: BASECONFIG | Configure Node Exporter
+  ansible.builtin.shell: mv /tmp/node_exporter-1.5.0.linux-amd64/node_exporter /usr/local/bin/
+
+- name: BASECONFIG | Copy prometheus.service
+  ansible.builtin.copy:
+    src: node_exporter.service
+    dest: /etc/systemd/system/node_exporter.service
+
+- name: BASECONFIG | Enable and start Node Exporter
+  ansible.builtin.systemd:
+    name: node_exporter.service
+    state: started
+    daemon_reload: true
+    enabled: true

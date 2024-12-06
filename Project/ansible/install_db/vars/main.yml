@@ -1,0 +1,11 @@
+---
+mysql_root_password: "str0ngRootP@ssw0rd!$$"
+db_name: "wordpress"
+mysql_wordpress_user: wp
+mysql_wordpress_user_password: "!OtusLinux2024"
+repl_user: "repl"
+mysql_repl_user_password: "!OtusLinux2024"
+monitor_user: "monitor"
+mysql_monitor_user_password: "P1e@seCh@ngeMe"
+db1_host_ip: "10.10.60.4"
+db2_host_ip: "10.10.60.5"

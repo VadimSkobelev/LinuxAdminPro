@@ -1,0 +1,17 @@
+[mysqld]
+pid-file=/var/run/mysqld/mysqld.pid
+log-error=/var/log/mysqld.log
+datadir=/var/lib/mysql
+socket=/var/lib/mysql/mysql.sock
+symbolic-links=0
+auto-increment-increment = 2
+replicate-same-server-id
+{% if ansible_hostname == 'db1' %}
+server-id = 1
+auto-increment-offset = 1
+{% else %}
+server-id = 2
+auto-increment-offset = 2
+{% endif %}
+innodb_file_per_table = 1
+skip-name-resolve
